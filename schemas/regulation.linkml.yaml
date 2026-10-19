@@ -1,0 +1,222 @@
+id: https://example.org/regulation/schema
+name: regulation_ontology
+title: 规章知识本体模式
+description: 规章文件解析、事实审核和 OWL 发布使用的统一模式。
+prefixes:
+  kb: https://example.org/regulation/
+  linkml: https://w3id.org/linkml/
+  xsd: http://www.w3.org/2001/XMLSchema#
+default_prefix: kb
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  Document:
+    description: 来源规章文档
+    attributes:
+      id:
+        identifier: true
+      title:
+        required: true
+      source_file:
+  Clause:
+    description: 可引用的规章条款
+    attributes:
+      id:
+        identifier: true
+      clause_number:
+      text:
+        required: true
+      belongs_to_document:
+        range: Document
+  Equipment:
+    description: 可执行操作、维护或管理动作的设备、系统或部件
+    attributes:
+      id:
+        identifier: true
+      label:
+        required: true
+      has_parameter:
+        range: Parameter
+        multivalued: true
+  Component:
+    is_a: Equipment
+    description: 设备内部或附属的可识别部件
+  System:
+    is_a: Equipment
+    description: 由多个设备或部件组成并承担完整功能的系统
+  Parameter:
+    description: 具有单位、上下限和条件阈值的运行参数
+    attributes:
+      id:
+        identifier: true
+      label:
+        required: true
+      lower_bound:
+        range: decimal
+      upper_bound:
+        range: decimal
+      unit:
+      condition_operator:
+      condition_threshold:
+        range: decimal
+  Role:
+    description: 承担操作、检查、报告或审批责任的人员、岗位或组织角色
+    attributes:
+      id:
+        identifier: true
+      label:
+        required: true
+  Requirement:
+    description: 从规章条款抽取并审核的规范要求
+    attributes:
+      id:
+        identifier: true
+      subject:
+        required: true
+      action:
+        required: true
+      modality:
+        range: RequirementModality
+      condition:
+      responsible_role:
+        range: Role
+      evidence_text:
+        required: true
+      source_clause:
+        range: Clause
+        required: true
+      confidence:
+        range: float
+  ExtractedEntity:
+    description: SPIRES 第一阶段从来源条款识别并完成证据校验的实体
+    attributes:
+      source_id:
+        description: 来源条款或表格行 ID
+        required: true
+      name:
+        description: 来源原文中逐字出现的实体名称
+        required: true
+      entity_type:
+        description: 实体对应的本体类
+        range: EntityType
+        required: true
+      evidence_text:
+        description: 支持实体识别的来源原文片段
+        required: true
+      confidence:
+        description: 实体识别置信度
+        range: float
+        required: true
+  ExtractedFact:
+    description: SPIRES 第二阶段抽取且主体、IRI 对象完成实体对齐的关系事实
+    attributes:
+      source_id:
+        required: true
+      subject:
+        required: true
+      subject_type:
+        range: EntityType
+        required: true
+      predicate:
+        required: true
+      object:
+        required: true
+      object_type:
+        required: true
+      object_class:
+        range: EntityType
+      unit:
+      condition:
+      evidence_text:
+        required: true
+      confidence:
+        range: float
+        required: true
+  RegulationExtraction:
+    tree_root: true
+    description: 规章实体和关系抽取结果
+    attributes:
+      entities:
+        range: ExtractedEntity
+        multivalued: true
+        inlined_as_list: true
+      facts:
+        range: ExtractedFact
+        multivalued: true
+        inlined_as_list: true
+
+enums:
+  RequirementModality:
+    permissible_values:
+      requires:
+      prohibits:
+      permits:
+  ReviewStatus:
+    permissible_values:
+      pending:
+      approved:
+      rejected:
+      auto_approved:
+  EntityType:
+    description: 可用于事实主体或 IRI 对象的本体实体类
+    permissible_values:
+      Equipment:
+      Component:
+      System:
+      Parameter:
+      Role:
+
+slots:
+  has_parameter:
+    description: 设备包含的运行参数
+    domain: Equipment
+    range: Parameter
+    multivalued: true
+  has_lower_bound:
+    description: 参数允许值下限
+    domain: Parameter
+    range: decimal
+  has_upper_bound:
+    description: 参数允许值上限
+    domain: Parameter
+    range: decimal
+  has_unit:
+    description: 参数值使用的计量单位
+    domain: Parameter
+    range: string
+  has_note:
+    description: 参数或对象的补充说明
+    domain: Parameter
+    range: string
+  has_condition_operator:
+    description: 运行条件使用的比较运算符
+    domain: Parameter
+    range: string
+  has_condition_threshold:
+    description: 运行条件阈值
+    domain: Parameter
+    range: decimal
+  has_condition_unit:
+    description: 运行条件阈值的单位
+    domain: Parameter
+    range: string
+  requires_action:
+    description: 主体必须执行的动作
+    range: string
+  prohibits_action:
+    description: 主体禁止执行的动作
+    range: string
+  permits_action:
+    description: 主体允许执行的动作
+    range: string
+  has_responsible_role:
+    description: 动作或要求对应的责任角色
+    range: Role
+  has_operating_condition:
+    description: 事实适用的运行或管理条件
+    range: string
+  source_clause:
+    range: Clause
+  evidence_text:

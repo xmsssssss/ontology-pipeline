@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>本体工作台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark"><i data-lucide="network"></i></span>
+          <span>
+            <strong>Ontology</strong>
+            <small>知识平台</small>
+          </span>
+        </div>
+
+        <nav class="main-nav" aria-label="主导航">
+          <button class="nav-item is-active" data-page="ontologies">
+            <i data-lucide="boxes"></i>
+            <span>本体资产</span>
+          </button>
+          <button class="nav-item" data-page="builds">
+            <i data-lucide="file-up"></i>
+            <span>文档构建</span>
+          </button>
+          <button class="nav-item" data-page="runs">
+            <i data-lucide="history"></i>
+            <span>运行记录</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="graphdb-status" id="graphdb-status" type="button">
+            <span class="status-dot is-idle"></span>
+            <span>
+              <strong>GraphDB</strong>
+              <small>正在检查连接</small>
+            </span>
+            <i data-lucide="chevron-right"></i>
+          </button>
+          <a class="nav-item nav-link" href="/docs" target="_blank" rel="noreferrer">
+            <i data-lucide="braces"></i>
+            <span>API 文档</span>
+          </a>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="page-eyebrow">知识资产</p>
+            <h1 id="page-title">本体资产</h1>
+          </div>
+          <div class="page-actions" id="page-actions"></div>
+        </header>
+        <section class="view" id="view-root" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div id="modal-root"></div>
+    <div class="toast-region" id="toast-region" aria-live="assertive"></div>
+
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,42 @@
+version: "0.1"
+description: 结构化设备参数表的列名映射
+columns:
+  equipment:
+    - 设备名称
+    - 设备
+    - 设备名
+    - equipment
+    - equipment_name
+  parameter:
+    - 参数名称
+    - 参数
+    - 参数名
+    - parameter
+    - parameter_name
+  lower:
+    - 下限
+    - 最小值
+    - min
+    - lower
+    - lower_bound
+  upper:
+    - 上限
+    - 最大值
+    - max
+    - upper
+    - upper_bound
+  unit:
+    - 单位
+    - unit
+    - uom
+  clause_no:
+    - 条款号
+    - 条款
+    - clause
+    - clause_no
+  notes:
+    - 备注
+    - 说明
+    - note
+    - notes
+    - description

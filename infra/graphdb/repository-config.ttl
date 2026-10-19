@@ -1,0 +1,14 @@
+@prefix rep: <http://www.openrdf.org/config/repository#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sail: <http://www.openrdf.org/config/sail#> .
+@prefix sr: <http://www.openrdf.org/config/repository/sail#> .
+
+[] a rep:Repository ;
+    rep:repositoryID "regulation" ;
+    rdfs:label "Regulation Knowledge" ;
+    rep:repositoryImpl [
+        rep:repositoryType "graphdb:SailRepository" ;
+        sr:sailImpl [
+            sail:sailType "graphdb:Sail"
+        ]
+    ] .
