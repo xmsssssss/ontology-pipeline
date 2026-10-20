@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -9,6 +8,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from kb.graphdb import GraphDBClient
+from kb.inference import DEFAULT_INFERENCE_ENGINE, INFERENCE_SCHEMA_VERSION
 
 RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 RDF_SUBJECT = "http://www.w3.org/1999/02/22-rdf-syntax-ns#subject"
@@ -16,10 +16,6 @@ RDF_PREDICATE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate"
 RDF_OBJECT = "http://www.w3.org/1999/02/22-rdf-syntax-ns#object"
 RDFS_LABEL = "http://www.w3.org/2000/01/rdf-schema#label"
 OWL_NAMED_INDIVIDUAL = "http://www.w3.org/2002/07/owl#NamedIndividual"
-HAS_PARAMETER = "hasParameter"
-HAS_LOWER_BOUND = "hasLowerBound"
-HAS_UPPER_BOUND = "hasUpperBound"
-HAS_UNIT = "hasUnit"
 INFERENCE_RULESET = "kb-explainable/1.0"
 
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
@@ -357,187 +353,6 @@ LIMIT {limit}
     )
 
 
-def _fact_confidence(fact: dict[str, Any]) -> float | None:
-    value = fact.get("confidence")
-    return float(value) if value is not None else None
-
-
-def _fact_statement(fact: dict[str, Any]) -> str:
-    return f"{fact.get('subject', '')} --{fact.get('predicate', '')}--> {fact.get('object', '')}"
-
-
-def _predicate_name(fact: dict[str, Any]) -> str:
-    return _local_name(str(fact.get("predicate_iri") or ""))
-
-
-def _best_fact(facts: list[dict[str, Any]], predicate: str) -> dict[str, Any] | None:
-    matches = [item for item in facts if _predicate_name(item) == predicate]
-    if not matches:
-        return None
-    return max(
-        matches,
-        key=lambda item: (
-            float(item.get("confidence") or 0),
-            int(item.get("score") or 0),
-        ),
-    )
-
-
-def _value_with_unit(value: str, unit: str) -> str:
-    value = str(value).strip()
-    unit = str(unit).strip()
-    if not unit or value.casefold().endswith(unit.casefold()):
-        return value
-    separator = "" if unit in {"%", "％", "℃", "°C"} else " "
-    return f"{value}{separator}{unit}"
-
-
-def _parameter_display_name(parameter: str, equipment: str) -> str:
-    for opening, closing in (("（", "）"), ("(", ")")):
-        suffix = f"{opening}{equipment}{closing}"
-        if parameter.endswith(suffix):
-            return parameter[: -len(suffix)].strip()
-    return parameter
-
-
-def _infer_parameter_constraints(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    parameter_links: dict[str, list[dict[str, Any]]] = {}
-    facts_by_subject: dict[str, list[dict[str, Any]]] = {}
-    for fact in facts:
-        subject_iri = str(fact.get("subject_iri") or "")
-        if subject_iri:
-            facts_by_subject.setdefault(subject_iri, []).append(fact)
-        if _predicate_name(fact) == HAS_PARAMETER:
-            parameter_iri = str(fact.get("object_iri") or "")
-            if parameter_iri:
-                parameter_links.setdefault(parameter_iri, []).append(fact)
-
-    inferred: list[dict[str, Any]] = []
-    for parameter_iri, links in parameter_links.items():
-        parameter_facts = facts_by_subject.get(parameter_iri, [])
-        lower = _best_fact(parameter_facts, HAS_LOWER_BOUND)
-        upper = _best_fact(parameter_facts, HAS_UPPER_BOUND)
-        unit = _best_fact(parameter_facts, HAS_UNIT)
-        if lower is None and upper is None:
-            continue
-
-        for link in links:
-            equipment = str(link.get("subject") or "")
-            parameter = str(link.get("object") or "")
-            parameter_display = _parameter_display_name(parameter, equipment)
-            unit_text = str(unit.get("object") or "") if unit else ""
-            lower_text = (
-                _value_with_unit(str(lower.get("object") or ""), unit_text) if lower else ""
-            )
-            upper_text = (
-                _value_with_unit(str(upper.get("object") or ""), unit_text) if upper else ""
-            )
-
-            if lower is not None and upper is not None:
-                rule = "parameter_range"
-                rule_label = "设备参数范围推导"
-                predicate_label = "参数范围"
-                predicate_iri = str(lower.get("predicate_iri") or "")
-                object_text = f"{lower_text} - {upper_text}"
-                statement = f"{equipment}的{parameter_display}范围为 {object_text}"
-            elif lower is not None:
-                rule = "parameter_bound"
-                rule_label = "设备参数下限推导"
-                predicate_label = "参数下限"
-                predicate_iri = str(lower.get("predicate_iri") or "")
-                object_text = lower_text
-                statement = f"{equipment}的{parameter_display}下限为 {object_text}"
-            else:
-                rule = "parameter_bound"
-                rule_label = "设备参数上限推导"
-                predicate_label = "参数上限"
-                predicate_iri = str(upper.get("predicate_iri") or "")
-                object_text = upper_text
-                statement = f"{equipment}的{parameter_display}上限为 {object_text}"
-
-            premise_facts: list[dict[str, Any]] = [link]
-            premise_facts.extend(item for item in (lower, upper, unit) if item is not None)
-            deduplicated: list[dict[str, Any]] = []
-            seen_provenance: set[str] = set()
-            for item in premise_facts:
-                provenance = str(item.get("provenance_iri") or "")
-                if provenance and provenance not in seen_provenance:
-                    seen_provenance.add(provenance)
-                    deduplicated.append(item)
-
-            premises = [
-                {
-                    "provenance_iri": item.get("provenance_iri"),
-                    "role": _predicate_name(item),
-                    "statement": _fact_statement(item),
-                    "confidence": item.get("confidence"),
-                }
-                for item in deduplicated
-            ]
-            proof_steps = [
-                {
-                    "step": index,
-                    "kind": "premise",
-                    "statement": premise["statement"],
-                    "provenance_iri": premise["provenance_iri"],
-                }
-                for index, premise in enumerate(premises, start=1)
-            ]
-            proof_steps.append(
-                {
-                    "step": len(proof_steps) + 1,
-                    "kind": "conclusion",
-                    "statement": statement,
-                }
-            )
-            confidences = [
-                value for item in deduplicated if (value := _fact_confidence(item)) is not None
-            ]
-            source_clauses = sorted(
-                {
-                    str(item.get("source_clause"))
-                    for item in deduplicated
-                    if item.get("source_clause")
-                }
-            )
-            evidence_texts: list[str] = []
-            for item in deduplicated:
-                evidence = _excerpt(str(item.get("evidence_text") or ""), 600)
-                if evidence and evidence not in evidence_texts:
-                    evidence_texts.append(evidence)
-            key = f"{rule}|{equipment}|{parameter}|{object_text}"
-            inferred_id = "inf-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
-            inferred.append(
-                {
-                    "inferred_id": inferred_id,
-                    "statement": statement,
-                    "subject": equipment,
-                    "subject_iri": link.get("subject_iri"),
-                    "parameter": parameter,
-                    "parameter_iri": parameter_iri,
-                    "predicate": predicate_label,
-                    "predicate_iri": predicate_iri,
-                    "object": object_text,
-                    "unit": unit_text or None,
-                    "rule": rule,
-                    "rule_label": rule_label,
-                    "premises": premises,
-                    "proof_steps": proof_steps,
-                    "source_clauses": source_clauses,
-                    "evidence_text": " ".join(evidence_texts),
-                    "confidence": min(confidences) if confidences else None,
-                    "confidence_basis": "minimum_of_premises",
-                }
-            )
-    return sorted(
-        inferred,
-        key=lambda item: (
-            -float(item.get("confidence") or 0),
-            str(item["statement"]).casefold(),
-        ),
-    )
-
-
 def _query_clauses(
     graphdb: GraphDBClient,
     *,
@@ -644,8 +459,15 @@ def _render_context_text(
         for index, item in enumerate(inferred_facts, start=1):
             lines.append(f"{index}. {item['statement']}")
             lines.append(f"   规则：{item['rule_label']}（{item['rule']}）")
+            if item.get("status") != "derived":
+                lines.append(f"   状态：{item.get('status')} / {item.get('severity')}")
             if item.get("confidence") is not None:
-                lines.append(f"   置信度：{item['confidence']:.3f}（取前提最低值）")
+                basis = (
+                    "取前提最低值"
+                    if item.get("confidence_basis") == "minimum_of_premises"
+                    else str(item.get("confidence_basis") or "")
+                )
+                lines.append(f"   置信度：{item['confidence']:.3f}（{basis}）")
             lines.append("   证明链：")
             for step in item.get("proof_steps") or []:
                 kind = "结论" if step.get("kind") == "conclusion" else "前提"
@@ -691,6 +513,7 @@ def build_agent_context(
     max_facts: int,
     max_clauses: int,
     max_chars: int,
+    enabled_rules: list[str] | None = None,
 ) -> dict[str, Any]:
     terms = _question_terms(question)
     entity_candidate_limit = min(400, max(max_entities * 6, max_entities + 1))
@@ -737,7 +560,11 @@ def build_agent_context(
         top_ratio=0.12,
         minimum_score=8,
     )
-    all_inferred_facts = _infer_parameter_constraints(all_facts)
+    inference_evaluation = DEFAULT_INFERENCE_ENGINE.evaluate(
+        all_facts,
+        enabled_rules=enabled_rules,
+    )
+    all_inferred_facts = [item.model_dump(mode="json") for item in inference_evaluation.results]
 
     entities = all_entities[:max_entities]
     facts = all_facts[:max_facts]
@@ -762,9 +589,18 @@ def build_agent_context(
         max_chars=max_chars,
     )
     rule_counts: dict[str, int] = {}
+    rule_id_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
     for item in inferred_facts:
         rule = str(item["rule"])
         rule_counts[rule] = rule_counts.get(rule, 0) + 1
+        rule_id = str(item["rule_id"])
+        rule_id_counts[rule_id] = rule_id_counts.get(rule_id, 0) + 1
+        category = str(item["category"])
+        category_counts[category] = category_counts.get(category, 0) + 1
+        status = str(item["status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
     return {
         "ontology": {
             "ontology_id": ontology_id,
@@ -806,9 +642,16 @@ def build_agent_context(
             "mode": "explainable",
             "engine": "application_rules",
             "ruleset": INFERENCE_RULESET,
+            "schema_version": INFERENCE_SCHEMA_VERSION,
             "available_count": len(all_inferred_facts),
             "inferred_count": len(inferred_facts),
             "rules": rule_counts,
+            "rule_ids": rule_id_counts,
+            "categories": category_counts,
+            "statuses": status_counts,
+            "executed_rules": [item.rule_id for item in inference_evaluation.executed_rules],
+            "catalog": DEFAULT_INFERENCE_ENGINE.rule_catalog(),
+            "errors": [item.model_dump(mode="json") for item in inference_evaluation.errors],
         },
         "context_text": context_text,
         "entities": entities,

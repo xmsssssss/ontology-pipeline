@@ -289,6 +289,22 @@ def test_agent_context_requires_published_version_and_respects_budgets(tmp_path)
         published = client.post("/api/ontologies/agent_regulation/versions/0.1.0/publish")
         assert published.status_code == 200
 
+        rules_response = client.get("/api/inference/rules")
+        assert rules_response.status_code == 200
+        rule_catalog = rules_response.json()["rules"]
+        assert {item["rule_id"] for item in rule_catalog} == {
+            "parameter_conditions",
+            "parameter_consistency",
+            "parameter_constraints",
+            "regulatory_requirements",
+        }
+        schema_response = client.get("/api/inference/schema")
+        assert schema_response.status_code == 200
+        result_schema = schema_response.json()["inference_result"]
+        assert {"rule_id", "conclusion", "premises", "proof_steps"}.issubset(
+            result_schema["properties"]
+        )
+
         response = client.post(
             "/api/agent/context",
             json={
@@ -321,24 +337,61 @@ def test_agent_context_requires_published_version_and_respects_budgets(tmp_path)
         assert payload["entities"][0]["label"] == "给水泵"
         assert payload["facts"][0]["confidence"] == 0.93
         assert payload["facts"][0]["source_clause"].endswith("/clause/pump-1")
-        assert payload["inference"] == {
-            "mode": "explainable",
-            "engine": "application_rules",
-            "ruleset": "kb-explainable/1.0",
-            "available_count": 1,
-            "inferred_count": 1,
-            "rules": {"parameter_bound": 1},
-        }
+        assert payload["inference"]["mode"] == "explainable"
+        assert payload["inference"]["engine"] == "application_rules"
+        assert payload["inference"]["ruleset"] == "kb-explainable/1.0"
+        assert payload["inference"]["schema_version"] == "kb-inference/1.0"
+        assert payload["inference"]["available_count"] == 1
+        assert payload["inference"]["inferred_count"] == 1
+        assert payload["inference"]["rules"] == {"parameter_bound": 1}
+        assert payload["inference"]["rule_ids"] == {"parameter_constraints": 1}
+        assert payload["inference"]["categories"] == {"parameter": 1}
+        assert payload["inference"]["statuses"] == {"derived": 1}
+        assert payload["inference"]["executed_rules"] == [
+            "parameter_conditions",
+            "parameter_consistency",
+            "parameter_constraints",
+            "regulatory_requirements",
+        ]
+        assert payload["inference"]["errors"] == []
         inferred = payload["inferred_facts"][0]
+        assert inferred["schema_version"] == "kb-inference/1.0"
+        assert inferred["rule_id"] == "parameter_constraints"
         assert inferred["statement"] == "给水泵的出口压力下限为 1.2 MPa"
         assert inferred["confidence"] == 0.9
         assert inferred["source_clauses"] == [f"{BASE_IRI}clause/pump-1"]
+        assert inferred["conclusion"]["predicate"] == "参数下限"
+        assert inferred["conclusion"]["object"] == "1.2 MPa"
+        assert inferred["premises"][0]["fact_id"].endswith("/provenance/fact-pump-pressure")
         assert [step["kind"] for step in inferred["proof_steps"]] == [
             "premise",
             "premise",
             "premise",
             "conclusion",
         ]
+
+        selected = client.post(
+            "/api/agent/context",
+            json={
+                "ontology_id": "agent_regulation",
+                "version": "0.1.0",
+                "question": "给水泵有哪些参数？",
+                "inference_rules": ["parameter_consistency"],
+            },
+        )
+        assert selected.status_code == 200
+        assert selected.json()["inference"]["available_count"] == 0
+
+        unknown_rule = client.post(
+            "/api/agent/context",
+            json={
+                "ontology_id": "agent_regulation",
+                "version": "0.1.0",
+                "question": "给水泵有哪些参数？",
+                "inference_rules": ["missing_rule"],
+            },
+        )
+        assert unknown_rule.status_code == 422
 
         default_budget = client.post(
             "/api/agent/context",

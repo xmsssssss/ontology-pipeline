@@ -54,6 +54,7 @@ PostgreSQL 和 Neo4j 尚未接入。GraphDB 适配器、仓库初始化脚本、
 - 把已发布 OWL 和 SHACL 写入 GraphDB 独立命名图。
 - 通过本地 rdflib 或 GraphDB 执行只读 SPARQL 查询。
 - 为 Agent 提供自然语言上下文接口，只检索已发布版本并返回实体、事实、条款原文、来源和置信度。
+- 使用可注册的应用规则生成可解释推导，统一输出结论、前提、证明链、证据、冲突状态和置信度。
 
 ## 快速开始
 
@@ -257,6 +258,8 @@ Web 页面发布本体版本后，本地版本状态会变为 `published`，并�
 | `GET` | `/api/ontologies/{id}/versions/{version}/download` | 导出 Turtle |
 | `POST` | `/api/ontologies/{id}/versions/{version}/publish` | 发布到 GraphDB |
 | `POST` | `/api/query` | 本地或 GraphDB SPARQL 查询 |
+| `GET` | `/api/inference/rules` | 查询已注册推理规则及其版本、分类和说明 |
+| `GET` | `/api/inference/schema` | 获取规则定义和推理结果的机器可读 JSON Schema |
 | `POST` | `/api/agent/context` | 为 Agent 检索实体、断言事实、可解释推导、条款和提示词上下文 |
 | `POST` | `/api/builds` | 上传文件并异步提交构建，返回 `202` |
 | `GET` | `/api/ai/status` | 查看 AI 配置与就绪状态 |
@@ -305,11 +308,122 @@ Invoke-RestMethod `
 - `facts`：图谱中由抽取结果直接断言的事实。
 - `inferred_facts`：应用规则基于断言事实生成的结论，不是 GraphDB 中已写入的新三元组。
 
-当前可解释规则会沿 `Equipment -> hasParameter -> Parameter`，把
-`hasLowerBound`、`hasUpperBound` 和 `hasUnit` 组合成设备参数约束。每条推导都返回
-`rule`、`premises`、`proof_steps`、`source_clauses`、证据和置信度；置信度取全部前提的最低值。
-GraphDB 仓库自身的 OWL/RDFS 推理继续负责类、属性层级等通用语义，应用规则负责这类需要向
-Agent 展示证明链的业务结论。
+### 可解释推理规则
+
+应用层推理使用可注册规则引擎，和 GraphDB 的 OWL/RDFS 推理分工如下：
+
+- GraphDB 负责类层级、属性层级、domain/range 等通用语义推理。
+- 应用规则负责需要向 Agent 展示业务解释的结论，例如参数范围、数据冲突和规章动作。
+- 推导结果只出现在 `inferred_facts`，不会自动写回 GraphDB，也不会改变断言事实。
+
+当前内置规则：
+
+| 规则 ID | 结论类型 | 作用 |
+| --- | --- | --- |
+| `parameter_constraints` | `parameter_range` / `parameter_bound` | 组合设备、参数、上下限和单位，生成参数范围或单边边界。 |
+| `parameter_conditions` | `parameter_condition` | 组合条件运算符、阈值和单位，生成运行条件。 |
+| `parameter_consistency` | `parameter_bound_conflict` / `parameter_unit_conflict` | 检测下限大于上限、同一参数存在多个单位等冲突。 |
+| `regulatory_requirements` | `regulatory_requirement` / `regulatory_prohibition` / `regulatory_permission` | 组合同一主体、同一来源条款下的规范动作和责任角色。 |
+
+每条推导使用 `kb-inference/1.0` 结构。核心字段如下：
+
+```json
+{
+  "schema_version": "kb-inference/1.0",
+  "inferred_id": "inf-...",
+  "rule": "parameter_bound",
+  "rule_id": "parameter_constraints",
+  "rule_version": "1.1.0",
+  "rule_label": "设备参数边界组合",
+  "category": "parameter",
+  "status": "derived",
+  "severity": "info",
+  "statement": "给水泵的出口压力下限为 1.2 MPa",
+  "subject": "给水泵",
+  "predicate": "参数下限",
+  "object": "1.2 MPa",
+  "unit": "MPa",
+  "conclusion": {
+    "subject": "给水泵",
+    "predicate": "参数下限",
+    "object": "1.2 MPa",
+    "statement": "给水泵的出口压力下限为 1.2 MPa"
+  },
+  "premises": [
+    {
+      "premise_index": 1,
+      "fact_id": "https://example.org/.../provenance/...",
+      "provenance_iri": "https://example.org/.../provenance/...",
+      "role": "hasParameter",
+      "statement": "给水泵 --具有参数--> 出口压力",
+      "confidence": 0.93,
+      "source_clause": "https://example.org/.../clause/pump-1",
+      "evidence_text": "给水泵出口压力应保持在规定范围内。"
+    }
+  ],
+  "proof_steps": [
+    {
+      "step": 1,
+      "kind": "premise",
+      "statement": "给水泵 --具有参数--> 出口压力",
+      "premise_indexes": [1]
+    },
+    {
+      "step": 2,
+      "kind": "conclusion",
+      "statement": "给水泵的出口压力下限为 1.2 MPa",
+      "premise_indexes": [1]
+    }
+  ],
+  "source_clauses": ["https://example.org/.../clause/pump-1"],
+  "evidence_text": "给水泵出口压力应保持在规定范围内。",
+  "confidence": 0.9,
+  "confidence_basis": "minimum_of_premises"
+}
+```
+
+`rule` 表示具体结论类型，兼容原有 Agent 读取方式；`rule_id` 表示注册的规则插件。
+`status` 可为 `derived`、`conflict` 或 `warning`，`severity` 可为 `info`、`warning`
+或 `error`。冲突规则不会中断其他规则，规则执行异常会记录在 `inference.errors` 中。
+
+可以只执行指定规则：
+
+```json
+{
+  "ontology_id": "regulation",
+  "version": "0.2.0",
+  "question": "给水泵出口压力是否有数据冲突？",
+  "inference_rules": ["parameter_consistency"]
+}
+```
+
+新增规则时，在 `src/kb/inference/rules/` 下实现以下接口，并注册到
+`RULE_REGISTRY`：
+
+```python
+from kb.inference import FactView, InferenceResult, RuleDefinition, RULE_REGISTRY
+
+
+class ExampleRule:
+    definition = RuleDefinition(
+        rule_id="example_rule",
+        version="1.0.0",
+        label="示例规则",
+        description="说明该规则的业务含义和前提条件。",
+        category="example",
+    )
+
+    def evaluate(self, facts: list[FactView]) -> list[InferenceResult]:
+        # 只读取断言事实，返回结构化 InferenceResult。
+        return []
+
+
+RULE_REGISTRY.register(ExampleRule())
+```
+
+同时把该模块加入 `src/kb/inference/registry.py` 的 `register_builtin_rules()` 导入列表，
+保证服务启动时执行注册。注册后可通过 `GET /api/inference/rules` 检查，并在 Agent 请求的
+`inference_rules` 中启用。规则应保持只读、可重复执行，并为每条结论保留前提事实和证明链。
 
 检索采用长词优先、问题短语加权和相对相关度阈值，过滤只由“效率”等短词命中的弱相关事实。
 因此 `facts` 始终表示已断言事实，`inferred_facts` 才表示推导结论，Agent 不应把两者混为
@@ -333,7 +447,12 @@ Agent 展示证明链的业务结论。
         "max_entities": {"type": "integer", "minimum": 1, "maximum": 100},
         "max_facts": {"type": "integer", "minimum": 1, "maximum": 200},
         "max_clauses": {"type": "integer", "minimum": 1, "maximum": 100},
-        "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000}
+        "max_chars": {"type": "integer", "minimum": 500, "maximum": 50000},
+        "inference_rules": {
+          "type": "array",
+          "items": {"type": "string"},
+          "maxItems": 50
+        }
       },
       "required": ["ontology_id", "version", "question"]
     }

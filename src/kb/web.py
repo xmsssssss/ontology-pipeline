@@ -31,6 +31,13 @@ from kb.ai_extraction import (
 )
 from kb.constants import DEFAULT_BASE_IRI, DEFAULT_ONTOLOGY_ID, DEFAULT_ONTOLOGY_VERSION
 from kb.graphdb import GraphDBClient, GraphDBError
+from kb.inference import (
+    DEFAULT_INFERENCE_ENGINE,
+    INFERENCE_SCHEMA_VERSION,
+    InferenceConfigurationError,
+    InferenceResult,
+    RuleDefinition,
+)
 from kb.models import KbModel
 from kb.pipeline import (
     PipelineCancelled,
@@ -96,6 +103,7 @@ class AgentContextRequest(BaseModel):
     max_facts: int = Field(default=20, ge=1, le=200)
     max_clauses: int = Field(default=8, ge=1, le=100)
     max_chars: int = Field(default=12000, ge=500, le=50000)
+    inference_rules: list[str] | None = Field(default=None, max_length=50)
 
 
 class ReviewRequest(KbModel):
@@ -570,6 +578,13 @@ def create_app(
     async def handle_ai_error(_, exc: Exception) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
+    @app.exception_handler(InferenceConfigurationError)
+    async def handle_inference_configuration_error(
+        _,
+        exc: InferenceConfigurationError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
     terminal_statuses = {
         "completed",
         "completed_with_validation_errors",
@@ -857,7 +872,24 @@ def create_app(
             max_facts=payload.max_facts,
             max_clauses=payload.max_clauses,
             max_chars=payload.max_chars,
+            enabled_rules=payload.inference_rules,
         )
+
+    @app.get("/api/inference/rules")
+    async def inference_rules() -> dict[str, Any]:
+        return {
+            "schema_version": INFERENCE_SCHEMA_VERSION,
+            "default_selection": "all",
+            "rules": DEFAULT_INFERENCE_ENGINE.rule_catalog(),
+        }
+
+    @app.get("/api/inference/schema")
+    async def inference_schema() -> dict[str, Any]:
+        return {
+            "schema_version": INFERENCE_SCHEMA_VERSION,
+            "rule_definition": RuleDefinition.model_json_schema(),
+            "inference_result": InferenceResult.model_json_schema(),
+        }
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, Any]:
